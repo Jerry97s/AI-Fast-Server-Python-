@@ -1,5 +1,7 @@
 # AI Fast Server Python
 
+[커밋 내역 페이지(GitHub)](https://github.com/Jerry97s/AI-Fast-Server-Python-/commits/master) · [프로젝트 커밋 기록(문서)](COMMIT_HISTORY.md)
+
 LangGraph 기반 대화형 AI 에이전트 서버.  
 OpenAI ChatGPT를 LLM으로 사용하며, FastAPI HTTP 서버와 Windows 서비스 배포를 지원한다.  
 C# WPF 클라이언트 연동 예제 포함.
