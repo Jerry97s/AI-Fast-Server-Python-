@@ -32,6 +32,60 @@ def save_memory(data):
     with open(MEMORY_FILE, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
+def _get_nested(d: dict, path: str, default=None):
+    cur = d
+    for k in path.split("."):
+        if not isinstance(cur, dict) or k not in cur:
+            return default
+        cur = cur[k]
+    return cur
+
+def _ensure_list_path(d: dict, path: str) -> list:
+    keys = path.split(".")
+    cur = d
+    for k in keys[:-1]:
+        cur = cur.setdefault(k, {})
+    leaf = keys[-1]
+    if leaf not in cur or not isinstance(cur[leaf], list):
+        cur[leaf] = []
+    return cur[leaf]
+
+def build_personalization_context(max_chars: int = 1200) -> str:
+    """
+    개인화 기억 + 규칙을 시스템 컨텍스트로 주입(짧게).
+    """
+    data = load_memory()
+    user_profile = _get_nested(data, "user_profile", {}) or {}
+    preferences = _get_nested(data, "preferences", {}) or {}
+    rules = preferences.get("rules", [])
+
+    lines: list[str] = []
+    if isinstance(user_profile, dict) and user_profile:
+        for k in ("name", "role", "company", "team"):
+            v = user_profile.get(k)
+            if v:
+                lines.append(f"- 사용자 {k}: {v}")
+
+    # 자유형 선호(preferences.*)
+    if isinstance(preferences, dict):
+        for k, v in preferences.items():
+            if k == "rules":
+                continue
+            if isinstance(v, (str, int, float)) and str(v).strip():
+                lines.append(f"- 선호 {k}: {v}")
+
+    if isinstance(rules, list) and rules:
+        lines.append("- 사용자 규칙(항상 우선):")
+        for i, r in enumerate(rules[:20], 1):
+            if isinstance(r, str) and r.strip():
+                lines.append(f"  {i}. {r.strip()}")
+
+    if not lines:
+        return ""
+
+    text = "저장된 개인화 기억/규칙:\n" + "\n".join(lines)
+    return text[:max_chars]
+
 # Memory tools
 @tool
 def memory_save(key: str, value: str) -> str:
@@ -76,6 +130,52 @@ def memory_search(query: str) -> str:
                         results.append(f"{current_path}[{i}]: {item}")
     search_dict(data)
     return "\n".join(results) if results else "No matches found"
+
+@tool
+def rule_add(rule: str) -> str:
+    """사용자 규칙을 추가한다. 예: '항상 존댓말', '답변은 3줄 요약 먼저'."""
+    rule = (rule or "").strip()
+    if not rule:
+        return "규칙이 비어 있습니다."
+    data = load_memory()
+    rules = _ensure_list_path(data, "preferences.rules")
+    if rule in rules:
+        return "이미 같은 규칙이 있습니다."
+    rules.append(rule)
+    save_memory(data)
+    return f"규칙이 추가되었습니다. (총 {len(rules)}개)"
+
+@tool
+def rule_list() -> str:
+    """현재 저장된 사용자 규칙 목록을 보여준다."""
+    data = load_memory()
+    rules = _get_nested(data, "preferences.rules", []) or []
+    if not rules:
+        return "저장된 규칙이 없습니다."
+    out = ["저장된 규칙:"]
+    for i, r in enumerate(rules, 1):
+        out.append(f"{i}. {r}")
+    return "\n".join(out)
+
+@tool
+def rule_remove(index: int) -> str:
+    """규칙을 인덱스로 삭제한다(1부터 시작)."""
+    data = load_memory()
+    rules = _get_nested(data, "preferences.rules", []) or []
+    if not isinstance(rules, list) or not rules:
+        return "저장된 규칙이 없습니다."
+    try:
+        i = int(index)
+    except Exception:
+        return "index는 숫자여야 합니다."
+    if i < 1 or i > len(rules):
+        return f"index 범위 오류: 1~{len(rules)}"
+    removed = rules.pop(i - 1)
+    # 저장
+    prefs = data.setdefault("preferences", {})
+    prefs["rules"] = rules
+    save_memory(data)
+    return f"규칙 삭제됨: {removed}"
 
 # Log dir: 프로젝트(main.py 위치) 기준
 CURRENT_LOG_DIR = [os.path.join(_PROJECT_ROOT, "logs")]  # set_log_directory로 덮어쓸 수 있음
@@ -202,7 +302,18 @@ For example:
 
 # Initialize the LLM
 llm = ChatOpenAI(temperature=0.7)
-tools = [calculator, memory_save, memory_load, memory_search, set_log_directory, read_log_file, list_log_files]
+tools = [
+    calculator,
+    memory_save,
+    memory_load,
+    memory_search,
+    rule_add,
+    rule_list,
+    rule_remove,
+    set_log_directory,
+    read_log_file,
+    list_log_files,
+]
 llm_with_tools = llm.bind_tools(tools)
 
 # Define nodes
@@ -215,9 +326,24 @@ def call_model(state):
         system_message = SystemMessage(content=(
             "너는 한글로만 답변해야 한다. 절대 영어로 답하지 말고, 항상 한글로 답변하거나 사용자 요청에 맞는 정보만 제공한다. 당신의 이름은 AI 어시스턴트이고, 사용자를 돕기 위해 여기있다.\n\n"
             "로그 파일을 다룰 때: read_log_file로 받은 내용을 바탕으로 시간 순서대로 무슨 일이 있었는지 요약·정리한다. "
-            "ERROR·WARNING 같은 특정 키워드만 골라 나열하지 말고, 전체 흐름을 설명한다."
+            "ERROR·WARNING 같은 특정 키워드만 골라 나열하지 말고, 전체 흐름을 설명한다.\n\n"
+            "개인화 기억/규칙:\n"
+            "- 사용자가 '기억해', '앞으로', '다음부터', '선호' 같은 표현으로 선호/프로필을 말하면 memory_save로 저장한다.\n"
+            "- 사용자가 '규칙:' 또는 '룰:'로 시작하거나 '규칙으로 저장'이라고 말하면 rule_add로 저장한다.\n"
+            "- 답변 시에는 저장된 규칙(rule_list)을 최우선으로 반영한다."
         ))
-        messages = [system_message] + messages
+        # 저장된 개인화/규칙 컨텍스트도 함께 주입(짧게)
+        personal = build_personalization_context()
+        if personal:
+            messages = [system_message, SystemMessage(content=personal)] + messages
+        else:
+            messages = [system_message] + messages
+    else:
+        # system은 이미 있으므로, 별도 개인화 컨텍스트만 추가(중복 최소화)
+        personal = build_personalization_context()
+        if personal:
+            # 이미 같은 내용이 들어갔을 수 있으니 마지막 system만 하나 추가
+            messages = [SystemMessage(content=personal)] + messages
 
     # --- Safety/Robustness: 컨텍스트 길이 초과 방지 ---
     # 1) 너무 긴 대화는 최근 것만 유지
@@ -295,6 +421,12 @@ def call_tools(state):
             result = list_log_files.invoke(tool_call["args"])
         elif tool_call["name"] == "set_log_directory":
             result = set_log_directory.invoke(tool_call["args"])
+        elif tool_call["name"] == "rule_add":
+            result = rule_add.invoke(tool_call["args"])
+        elif tool_call["name"] == "rule_list":
+            result = rule_list.invoke(tool_call["args"])
+        elif tool_call["name"] == "rule_remove":
+            result = rule_remove.invoke(tool_call["args"])
         else:
             result = "Unknown tool"
         results.append(ToolMessage(content=str(result), tool_call_id=tool_call["id"]))
