@@ -48,7 +48,7 @@ load_dotenv(dotenv_path=os.path.join(_PROJECT_ROOT, ".env"))
 
 # main.py에서 컴파일된 그래프 사용 (모델은 app_settings 기반으로 연결됨)
 
-from main import app as agent_graph  # noqa: E402
+from main import app as agent_graph, bind_chat_thread_id  # noqa: E402, I001
 
 _settings = get_settings()
 
@@ -605,7 +605,8 @@ def _run_chat(body: ChatRequest, request: Request) -> ChatResponse:
     messages.append(HumanMessage(content=body.message))
 
     try:
-        result = agent_graph.invoke({"messages": messages}, config=config)
+        with bind_chat_thread_id(body.thread_id):
+            result = agent_graph.invoke({"messages": messages}, config=config)
 
     except HTTPException:
         raise

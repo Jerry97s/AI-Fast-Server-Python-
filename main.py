@@ -4,6 +4,8 @@ import json
 import operator
 import os
 import sqlite3
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Annotated, TypedDict
 
 from dotenv import load_dotenv
@@ -229,15 +231,40 @@ def rule_remove(index: int) -> str:
     return f"규칙 삭제됨: {removed}"
 
 
-# Log dir: 프로젝트(main.py 위치) 기준
-CURRENT_LOG_DIR = [os.path.join(_PROJECT_ROOT, "logs")]  # set_log_directory로 덮어쓸 수 있음
+# Log dir: 기본은 프로젝트 logs/. API에서는 thread_id마다 별도 기준 폴더(전역 오염 방지).
+DEFAULT_SERVER_LOG_DIR = os.path.join(_PROJECT_ROOT, "logs")
+CURRENT_LOG_DIR = [DEFAULT_SERVER_LOG_DIR]  # CLI 등 thread 컨텍스트 없을 때만 사용
 READ_LOG_MAX_CHARS = 32000
-os.makedirs(CURRENT_LOG_DIR[0], exist_ok=True)
+_thread_log_dirs: dict[str, str] = {}
+_chat_thread_ctx: ContextVar[str | None] = ContextVar("chat_thread_id", default=None)
+
+os.makedirs(DEFAULT_SERVER_LOG_DIR, exist_ok=True)
+
+
+def _get_active_log_base() -> str:
+    tid = _chat_thread_ctx.get()
+    if tid is None:
+        return os.path.abspath(CURRENT_LOG_DIR[0])
+    base = _thread_log_dirs.get(tid)
+    return os.path.abspath(base if base is not None else DEFAULT_SERVER_LOG_DIR)
+
+
+@contextmanager
+def bind_chat_thread_id(thread_id: str):
+    """HTTP/API 한 요청·invoke 동안 도구가 이 대화 스레드의 로그 폴더만 보도록 묶는다."""
+    tok = _chat_thread_ctx.set(thread_id)
+    try:
+        yield
+    finally:
+        _chat_thread_ctx.reset(tok)
 
 
 @tool
 def set_log_directory(folder_path: str) -> str:
-    """Set the folder to analyze log files. Provide the folder path."""
+    """분석할 로그 폴더 경로를 설정한다(서버에 실제 존재하는 디렉터리).
+
+    클라이언트가 업로드한 파일은 서버 프로젝트의 logs 폴더에 저장되므로,
+    사용자 PC 경로를 넣으면 안 된다. 명시적으로 다른 서버 폴더를 쓸 때만 호출한다."""
     try:
         # Convert to absolute path
         abs_path = os.path.abspath(folder_path)
@@ -250,8 +277,11 @@ def set_log_directory(folder_path: str) -> str:
         if not os.path.isdir(abs_path):
             return f"이것은 폴더가 아닙니다: {folder_path}"
 
-        # Set the new directory
-        CURRENT_LOG_DIR[0] = abs_path
+        tid = _chat_thread_ctx.get()
+        if tid is None:
+            CURRENT_LOG_DIR[0] = abs_path
+        else:
+            _thread_log_dirs[tid] = abs_path
         return f"로그 분석 폴더가 설정되었습니다: {abs_path}"
     except Exception as e:
         return f"폴더 설정 오류: {str(e)}"
@@ -259,12 +289,14 @@ def set_log_directory(folder_path: str) -> str:
 
 @tool
 def read_log_file(filename: str) -> str:
-    """현재 로그 폴더의 파일 전체 내용을 읽는다. 경로 없이 파일명만 넣는다.
+    """현재 대화 스레드의 로그 폴더에서 파일 전체를 읽는다. 경로 없이 파일명만 넣는다.
+
+    WPF/API에서 업로드된 파일은 서버의 logs 폴더에만 있으므로 업로드 직후에는 파일명만 지정하면 된다.
 
     로그를 정리·요약해달라는 요청에는 이 도구로 전체 텍스트를 가져온 뒤,
     특정 단어(ERROR 등)만 찾아 나열하지 말고 시간 순서대로 무슨 일이 있었는지 한글로 정리해서 답한다."""
     try:
-        base_dir = os.path.abspath(CURRENT_LOG_DIR[0])
+        base_dir = _get_active_log_base()
         safe_name = os.path.basename(filename.strip().strip('"').strip("'"))
         filepath = os.path.abspath(os.path.join(base_dir, safe_name))
         try:
@@ -296,9 +328,9 @@ def read_log_file(filename: str) -> str:
 
 @tool
 def list_log_files() -> str:
-    """현재 설정된 로그 폴더 안의 파일 목록을 보여준다."""
+    """현재 대화 스레드 기준 로그 폴더 안의 파일 목록을 보여준다."""
     try:
-        base_dir = os.path.abspath(CURRENT_LOG_DIR[0])
+        base_dir = _get_active_log_base()
         header = f"로그 폴더: {base_dir}\n\n"
         if not os.path.exists(base_dir):
             return header + "해당 경로가 없습니다."
@@ -381,7 +413,10 @@ def call_model(state):
         system_message = SystemMessage(
             content=(
                 "너는 한글로만 답변해야 한다. 절대 영어로 답하지 말고, 항상 한글로 답변하거나 사용자 요청에 맞는 정보만 제공한다. 당신의 이름은 AI 어시스턴트이고, 사용자를 돕기 위해 여기있다.\n\n"
-                "로그 파일을 다룰 때: read_log_file로 받은 내용을 바탕으로 시간 순서대로 무슨 일이 있었는지 요약·정리한다. "
+                "로그 분석: 클라이언트가 업로드한 파일은 이 서버의 \"logs\" 폴더에만 저장된다. "
+                "업로드된 파일을 분석할 때는 사용자 PC 경로나 임의 폴더로 set_log_directory 하지 말고, "
+                "먼저 list_log_files로 확인한 뒤 해당 파일명만 read_log_file에 넘긴다. "
+                "read_log_file로 읽은 내용을 바탕으로 시간 순서대로 무슨 일이 있었는지 요약·정리한다. "
                 "ERROR·WARNING 같은 특정 키워드만 골라 나열하지 말고, 전체 흐름을 설명한다.\n\n"
                 "개인화 기억/규칙:\n"
                 "- 사용자가 '기억해', '앞으로', '다음부터', '선호' 같은 표현으로 선호/프로필을 말하면 memory_save로 저장한다.\n"
@@ -554,5 +589,6 @@ if __name__ == "__main__":
         user_input = input("You: ")
         if user_input.lower() in ["exit", "quit"]:
             break
-        result = app.invoke({"messages": [HumanMessage(content=user_input)]}, config=config)
+        with bind_chat_thread_id("user_session"):
+            result = app.invoke({"messages": [HumanMessage(content=user_input)]}, config=config)
         print(f"Agent: {result['messages'][-1].content}")
