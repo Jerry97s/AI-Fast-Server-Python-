@@ -24,7 +24,14 @@
 - `AGENT_MODEL`, `AGENT_LLM_TIMEOUT_SECONDS`, `AGENT_LLM_MAX_TOKENS`
 - `OPENAI_API_BASE` (Azure 게이트웨어·OpenAI 호환 로컬 서버 등)
 - `AGENT_RATE_LIMIT_PER_MINUTE` (`0`이면 분당 제한 비활성)
+- **`AGENT_CORS_ORIGINS`**: 쉼표 구분 출처 목록. 프로덕션에서는 `*` 대신 명시 권장.
+- **`AGENT_API_BEARER_TOKEN`**: 설정 시 `/v1/chat`, `/v1/upload` 등에 `Authorization: Bearer …` 필요 (`/health`, `/ready`, 문서 경로 제외).
 
-## 헬스 체크
+## 헬스·준비 상태
 
-`GET /health`는 버전과 **모델 이름**(비밀 없음)을 반환합니다.
+- `GET /health`: 버전과 **모델 이름**(비밀 없음).
+- `GET /ready`: SQLite 체크포인트·로그 디렉터리 쓰기 가능 여부 (503 시 트래픽 차단 권장).
+
+## 응답 보안 헤더
+
+API는 `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy` 등 기본 헤더를 붙입니다.

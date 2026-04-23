@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 import os
 import time
-import urllib.request
 import urllib.parse
+import urllib.request
 
 _LAST_SENT_AT = 0.0
 _LAST_SIGNATURE = ""
@@ -117,4 +117,3 @@ def send_slack_error(
     _LAST_SENT_AT = t
     _LAST_SIGNATURE = sig
     return True
-

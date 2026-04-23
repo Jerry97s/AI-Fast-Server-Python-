@@ -40,4 +40,3 @@ def client(mock_agent_graph):
     import api_server
 
     return TestClient(api_server.app)
-

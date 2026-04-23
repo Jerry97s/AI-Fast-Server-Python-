@@ -20,7 +20,7 @@ dependencies = [
 
 [project.optional-dependencies]
 windows-service = ["pywin32>=307"]
-dev = ["pytest>=8.0", "httpx>=0.27"]
+dev = ["pytest>=8.0", "httpx>=0.27", "ruff>=0.8"]
 
 [build-system]
 requires = ["setuptools>=70", "wheel"]
@@ -35,3 +35,15 @@ py-modules = []
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+
+[tool.ruff]
+line-length = 120
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+# 한국어 긴 문자열·레거시 도구 코드
+"main.py" = ["E501"]
+"windows_service.py" = ["E501"]

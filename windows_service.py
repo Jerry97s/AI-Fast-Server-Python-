@@ -21,20 +21,20 @@ Windows 서비스로 uvicorn(API 서버)을 기동합니다.
 
 from __future__ import annotations
 
+import codecs
 import os
 import subprocess
 import sys
 import threading
 import time
-import codecs
 
 _PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 
 try:
+    import servicemanager
     import win32event
     import win32service
     import win32serviceutil
-    import servicemanager
 except ImportError:
     win32event = None
     win32service = None
@@ -192,7 +192,10 @@ if win32serviceutil is not None:
                     servicemanager.LogMsg(
                         servicemanager.EVENTLOG_WARNING_TYPE,
                         servicemanager.PYS_SERVICE_STOPPED,
-                        (self._svc_name_, f"uvicorn 프로세스 종료됨 (코드 {code}). 로그: {log_path}"),
+                        (
+                            self._svc_name_,
+                            f"uvicorn 프로세스 종료됨 (코드 {code}). 로그: {log_path}",
+                        ),
                     )
                     if restart_attempt >= len(restart_delays):
                         break

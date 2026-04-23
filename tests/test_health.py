@@ -10,4 +10,3 @@ def test_health_returns_version_and_model(client):
     assert "model" in data
     assert isinstance(data["model"], str)
     assert len(data["model"]) > 0
-

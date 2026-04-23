@@ -1,21 +1,24 @@
 # AI Agent using LangGraph and OpenAI with persistent memory
 
-from dotenv import load_dotenv
-from app_settings import get_settings
-from langchain_openai import ChatOpenAI
-from langchain_core.tools import tool
-from langchain_core.prompts import PromptTemplate
-from langchain_core.messages import HumanMessage, AIMessage, ToolMessage, SystemMessage
-from langgraph.graph import StateGraph, END
-from langgraph.checkpoint.sqlite import SqliteSaver
-import sqlite3
-from typing import TypedDict, Annotated
-import operator
 import json
+import operator
 import os
+import sqlite3
+from typing import Annotated, TypedDict
+
+from dotenv import load_dotenv
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.tools import tool
+from langchain_openai import ChatOpenAI
+from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.graph import END, StateGraph
+
+from app_settings import get_settings
+from safe_math import evaluate_arithmetic
 
 # Load environment variables (Settings가 .env를 읽지만, 다른 모듈 호환용으로 유지)
 load_dotenv()
+
 
 def _build_llm() -> ChatOpenAI:
     s = get_settings()
@@ -32,21 +35,41 @@ def _build_llm() -> ChatOpenAI:
         kw["base_url"] = s.openai_api_base
     return ChatOpenAI(**kw)
 
+
 _PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 
 # Memory file (프로젝트 루트 고정 — API·다른 cwd에서 실행해도 동일 파일 사용)
 MEMORY_FILE = os.path.join(_PROJECT_ROOT, "memory.json")
 
+
 def load_memory():
     try:
-        with open(MEMORY_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
+        with open(MEMORY_FILE, encoding="utf-8") as f:
+            data = json.load(f)
     except FileNotFoundError:
-        return {"user_profile": {}, "preferences": {}, "history": [], "tasks": [], "knowledge": []}
+        data = {"user_profile": {}, "preferences": {}, "history": [], "tasks": [], "knowledge": []}
+    else:
+        data = _prune_memory_history_if_needed(data)
+    return data
+
+
+def _prune_memory_history_if_needed(data: dict) -> dict:
+    """history 리스트가 상한을 넘으면 오래된 항목을 잘라 저장합니다."""
+    max_items = get_settings().agent_memory_history_max_items
+    hist = data.get("history")
+    if not isinstance(hist, list) or max_items <= 0:
+        return data
+    if len(hist) <= max_items:
+        return data
+    data["history"] = hist[-max_items:]
+    save_memory(data)
+    return data
+
 
 def save_memory(data):
-    with open(MEMORY_FILE, 'w', encoding='utf-8') as f:
+    with open(MEMORY_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+
 
 def _get_nested(d: dict, path: str, default=None):
     cur = d
@@ -55,6 +78,7 @@ def _get_nested(d: dict, path: str, default=None):
             return default
         cur = cur[k]
     return cur
+
 
 def _ensure_list_path(d: dict, path: str) -> list:
     keys = path.split(".")
@@ -65,6 +89,7 @@ def _ensure_list_path(d: dict, path: str) -> list:
     if leaf not in cur or not isinstance(cur[leaf], list):
         cur[leaf] = []
     return cur[leaf]
+
 
 def build_personalization_context(max_chars: int = 1200) -> str:
     """
@@ -102,12 +127,13 @@ def build_personalization_context(max_chars: int = 1200) -> str:
     text = "저장된 개인화 기억/규칙:\n" + "\n".join(lines)
     return text[:max_chars]
 
+
 # Memory tools
 @tool
 def memory_save(key: str, value: str) -> str:
     """Save information to memory. Key should be in format like 'user_profile.name'."""
     data = load_memory()
-    keys = key.split('.')
+    keys = key.split(".")
     current = data
     for k in keys[:-1]:
         current = current.setdefault(k, {})
@@ -115,11 +141,12 @@ def memory_save(key: str, value: str) -> str:
     save_memory(data)
     return f"Saved {key}: {value}"
 
+
 @tool
 def memory_load(key: str) -> str:
     """Load information from memory."""
     data = load_memory()
-    keys = key.split('.')
+    keys = key.split(".")
     current = data
     try:
         for k in keys:
@@ -128,15 +155,19 @@ def memory_load(key: str) -> str:
     except KeyError:
         return f"Key {key} not found"
 
+
 @tool
 def memory_search(query: str) -> str:
     """Search memory for information containing the query."""
     data = load_memory()
     results = []
+
     def search_dict(d, path=""):
         for k, v in d.items():
             current_path = f"{path}.{k}" if path else k
-            if query.lower() in current_path.lower() or (isinstance(v, str) and query.lower() in v.lower()):
+            if query.lower() in current_path.lower() or (
+                isinstance(v, str) and query.lower() in v.lower()
+            ):
                 results.append(f"{current_path}: {v}")
             if isinstance(v, dict):
                 search_dict(v, current_path)
@@ -144,8 +175,10 @@ def memory_search(query: str) -> str:
                 for i, item in enumerate(v):
                     if isinstance(item, str) and query.lower() in item.lower():
                         results.append(f"{current_path}[{i}]: {item}")
+
     search_dict(data)
     return "\n".join(results) if results else "No matches found"
+
 
 @tool
 def rule_add(rule: str) -> str:
@@ -161,6 +194,7 @@ def rule_add(rule: str) -> str:
     save_memory(data)
     return f"규칙이 추가되었습니다. (총 {len(rules)}개)"
 
+
 @tool
 def rule_list() -> str:
     """현재 저장된 사용자 규칙 목록을 보여준다."""
@@ -172,6 +206,7 @@ def rule_list() -> str:
     for i, r in enumerate(rules, 1):
         out.append(f"{i}. {r}")
     return "\n".join(out)
+
 
 @tool
 def rule_remove(index: int) -> str:
@@ -193,10 +228,12 @@ def rule_remove(index: int) -> str:
     save_memory(data)
     return f"규칙 삭제됨: {removed}"
 
+
 # Log dir: 프로젝트(main.py 위치) 기준
 CURRENT_LOG_DIR = [os.path.join(_PROJECT_ROOT, "logs")]  # set_log_directory로 덮어쓸 수 있음
 READ_LOG_MAX_CHARS = 32000
 os.makedirs(CURRENT_LOG_DIR[0], exist_ok=True)
+
 
 @tool
 def set_log_directory(folder_path: str) -> str:
@@ -204,20 +241,21 @@ def set_log_directory(folder_path: str) -> str:
     try:
         # Convert to absolute path
         abs_path = os.path.abspath(folder_path)
-        
+
         # Check if path exists
         if not os.path.exists(abs_path):
             return f"폴더를 찾을 수 없습니다: {folder_path}"
-        
+
         # Check if it's a directory
         if not os.path.isdir(abs_path):
             return f"이것은 폴더가 아닙니다: {folder_path}"
-        
+
         # Set the new directory
         CURRENT_LOG_DIR[0] = abs_path
         return f"로그 분석 폴더가 설정되었습니다: {abs_path}"
     except Exception as e:
         return f"폴더 설정 오류: {str(e)}"
+
 
 @tool
 def read_log_file(filename: str) -> str:
@@ -234,7 +272,7 @@ def read_log_file(filename: str) -> str:
                 return f"폴더 외부 파일에 접근할 수 없습니다: {base_dir}"
         except ValueError:
             return f"폴더 외부 파일에 접근할 수 없습니다: {base_dir}"
-        
+
         if not os.path.exists(filepath):
             listing = ""
             if os.path.isdir(base_dir):
@@ -243,21 +281,18 @@ def read_log_file(filename: str) -> str:
             return (
                 f"파일을 찾을 수 없습니다: {safe_name}\n"
                 f"조회한 전체 경로: {filepath}\n"
-                f"현재 로그 폴더: {base_dir}"
-                + listing
+                f"현재 로그 폴더: {base_dir}" + listing
             )
-        
-        with open(filepath, 'r', encoding='utf-8') as f:
+
+        with open(filepath, encoding="utf-8") as f:
             content = f.read()
         if len(content) > READ_LOG_MAX_CHARS:
             head = content[:READ_LOG_MAX_CHARS]
-            return (
-                f"[앞부분만 표시: 총 {len(content)}자 중 {READ_LOG_MAX_CHARS}자까지]\n\n"
-                + head
-            )
+            return f"[앞부분만 표시: 총 {len(content)}자 중 {READ_LOG_MAX_CHARS}자까지]\n\n" + head
         return content
     except Exception as e:
         return f"파일 읽기 오류: {str(e)}"
+
 
 @tool
 def list_log_files() -> str:
@@ -267,35 +302,38 @@ def list_log_files() -> str:
         header = f"로그 폴더: {base_dir}\n\n"
         if not os.path.exists(base_dir):
             return header + "해당 경로가 없습니다."
-        
+
         files = os.listdir(base_dir)
         if not files:
             return header + "이 폴더는 비어 있습니다."
-        
+
         file_info = []
         for f in files:
             filepath = os.path.join(base_dir, f)
             if os.path.isfile(filepath):
                 size = os.path.getsize(filepath)
                 file_info.append(f"{f} ({size} bytes)")
-        
+
         return header + ("\n".join(file_info) if file_info else "파일이 없습니다(폴더만 있음)")
     except Exception as e:
         return f"파일 목록 조회 오류: {str(e)}"
 
+
 # Define a simple tool
 @tool
 def calculator(expression: str) -> str:
-    """Evaluate a mathematical expression."""
+    """숫자 산술식만 평가합니다 (+ - * / % **, 괄호). 임의 코드 실행 없음."""
     try:
-        result = eval(expression)
+        result = evaluate_arithmetic(expression)
         return str(result)
     except Exception as e:
-        return f"Error: {str(e)}"
+        return f"오류: {str(e)}"
+
 
 # Define state
 class AgentState(TypedDict):
     messages: Annotated[list, operator.add]
+
 
 # System prompt
 system_prompt = """
@@ -332,6 +370,7 @@ tools = [
 ]
 llm_with_tools = llm.bind_tools(tools)
 
+
 # Define nodes
 def call_model(state):
     messages = state["messages"]
@@ -339,15 +378,17 @@ def call_model(state):
     has_system = any(isinstance(msg, SystemMessage) for msg in messages)
     if not has_system:
         # Add Korean system prompt at the beginning
-        system_message = SystemMessage(content=(
-            "너는 한글로만 답변해야 한다. 절대 영어로 답하지 말고, 항상 한글로 답변하거나 사용자 요청에 맞는 정보만 제공한다. 당신의 이름은 AI 어시스턴트이고, 사용자를 돕기 위해 여기있다.\n\n"
-            "로그 파일을 다룰 때: read_log_file로 받은 내용을 바탕으로 시간 순서대로 무슨 일이 있었는지 요약·정리한다. "
-            "ERROR·WARNING 같은 특정 키워드만 골라 나열하지 말고, 전체 흐름을 설명한다.\n\n"
-            "개인화 기억/규칙:\n"
-            "- 사용자가 '기억해', '앞으로', '다음부터', '선호' 같은 표현으로 선호/프로필을 말하면 memory_save로 저장한다.\n"
-            "- 사용자가 '규칙:' 또는 '룰:'로 시작하거나 '규칙으로 저장'이라고 말하면 rule_add로 저장한다.\n"
-            "- 답변 시에는 저장된 규칙(rule_list)을 최우선으로 반영한다."
-        ))
+        system_message = SystemMessage(
+            content=(
+                "너는 한글로만 답변해야 한다. 절대 영어로 답하지 말고, 항상 한글로 답변하거나 사용자 요청에 맞는 정보만 제공한다. 당신의 이름은 AI 어시스턴트이고, 사용자를 돕기 위해 여기있다.\n\n"
+                "로그 파일을 다룰 때: read_log_file로 받은 내용을 바탕으로 시간 순서대로 무슨 일이 있었는지 요약·정리한다. "
+                "ERROR·WARNING 같은 특정 키워드만 골라 나열하지 말고, 전체 흐름을 설명한다.\n\n"
+                "개인화 기억/규칙:\n"
+                "- 사용자가 '기억해', '앞으로', '다음부터', '선호' 같은 표현으로 선호/프로필을 말하면 memory_save로 저장한다.\n"
+                "- 사용자가 '규칙:' 또는 '룰:'로 시작하거나 '규칙으로 저장'이라고 말하면 rule_add로 저장한다.\n"
+                "- 답변 시에는 저장된 규칙(rule_list)을 최우선으로 반영한다."
+            )
+        )
         # 저장된 개인화/규칙 컨텍스트도 함께 주입(짧게)
         personal = build_personalization_context()
         if personal:
@@ -368,14 +409,20 @@ def call_model(state):
         # system 메시지가 있으면 유지하고 최근 메시지만 잘라냄
         sys_msgs = [m for m in messages if isinstance(m, SystemMessage)]
         non_sys = [m for m in messages if not isinstance(m, SystemMessage)]
-        messages = (sys_msgs[:1] + non_sys[-(MAX_MESSAGES - 1):]) if sys_msgs else non_sys[-MAX_MESSAGES:]
+        messages = (
+            (sys_msgs[:1] + non_sys[-(MAX_MESSAGES - 1) :]) if sys_msgs else non_sys[-MAX_MESSAGES:]
+        )
 
     # 2) 개별 메시지 본문이 지나치게 길면 잘라냄(파일 업로드/대용량 텍스트 방지)
     MAX_HUMAN_CHARS = 4000
     MAX_TOOL_CHARS = 2000
     trimmed = []
     for m in messages:
-        if isinstance(m, HumanMessage) and isinstance(m.content, str) and len(m.content) > MAX_HUMAN_CHARS:
+        if (
+            isinstance(m, HumanMessage)
+            and isinstance(m.content, str)
+            and len(m.content) > MAX_HUMAN_CHARS
+        ):
             trimmed.append(
                 HumanMessage(
                     content=(
@@ -385,7 +432,11 @@ def call_model(state):
                     )
                 )
             )
-        elif isinstance(m, ToolMessage) and isinstance(m.content, str) and len(m.content) > MAX_TOOL_CHARS:
+        elif (
+            isinstance(m, ToolMessage)
+            and isinstance(m.content, str)
+            and len(m.content) > MAX_TOOL_CHARS
+        ):
             trimmed.append(
                 ToolMessage(
                     content=(
@@ -441,6 +492,7 @@ def call_model(state):
     response = llm_with_tools.invoke(messages)
     return {"messages": [response]}
 
+
 def call_tools(state):
     messages = state["messages"]
     last_message = messages[-1]
@@ -472,12 +524,14 @@ def call_tools(state):
         results.append(ToolMessage(content=str(result), tool_call_id=tool_call["id"]))
     return {"messages": results}
 
+
 def should_continue(state):
     messages = state["messages"]
     last_message = messages[-1]
-    if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
+    if hasattr(last_message, "tool_calls") and last_message.tool_calls:
         return "tools"
     return END
+
 
 # Build graph
 workflow = StateGraph(AgentState)
@@ -498,7 +552,7 @@ if __name__ == "__main__":
     config = {"configurable": {"thread_id": "user_session"}}
     while True:
         user_input = input("You: ")
-        if user_input.lower() in ['exit', 'quit']:
+        if user_input.lower() in ["exit", "quit"]:
             break
         result = app.invoke({"messages": [HumanMessage(content=user_input)]}, config=config)
         print(f"Agent: {result['messages'][-1].content}")
