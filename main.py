@@ -1,6 +1,7 @@
 # AI Agent using LangGraph and OpenAI with persistent memory
 
 from dotenv import load_dotenv
+from app_settings import get_settings
 from langchain_openai import ChatOpenAI
 from langchain_core.tools import tool
 from langchain_core.prompts import PromptTemplate
@@ -13,8 +14,23 @@ import operator
 import json
 import os
 
-# Load environment variables
+# Load environment variables (Settings가 .env를 읽지만, 다른 모듈 호환용으로 유지)
 load_dotenv()
+
+def _build_llm() -> ChatOpenAI:
+    s = get_settings()
+    kw: dict = {
+        "model": s.agent_model,
+        "temperature": s.agent_llm_temperature,
+        "timeout": s.agent_llm_timeout_seconds,
+    }
+    if s.agent_llm_max_tokens is not None:
+        kw["max_tokens"] = s.agent_llm_max_tokens
+    if s.openai_api_key:
+        kw["api_key"] = s.openai_api_key.get_secret_value()
+    if s.openai_api_base:
+        kw["base_url"] = s.openai_api_base
+    return ChatOpenAI(**kw)
 
 _PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 
@@ -300,8 +316,8 @@ For example:
 - Remember user preferences and reference them in future responses
 """
 
-# Initialize the LLM
-llm = ChatOpenAI(temperature=0.7)
+# Initialize the LLM (모델·타임아웃·토큰·base_url은 app_settings / 환경 변수)
+llm = _build_llm()
 tools = [
     calculator,
     memory_save,
@@ -397,6 +413,30 @@ def call_model(state):
         dropped = non_sys.pop(0)
         total -= _msg_len(dropped)
     messages = (sys_msgs[:1] + non_sys) if sys_msgs else non_sys
+
+    # 4) ToolMessage 정합성 보장
+    # 컨텍스트 트리밍 과정에서 (tool_calls가 있는 AIMessage)는 버려지고 ToolMessage만 남으면
+    # OpenAI가 "tool role must follow tool_calls"로 400을 반환합니다.
+    cleaned = []
+    last_ai_had_tool_calls = False
+    for m in messages:
+        if isinstance(m, ToolMessage):
+            if last_ai_had_tool_calls:
+                cleaned.append(m)
+            # else: 고아 ToolMessage는 제거
+            continue
+
+        cleaned.append(m)
+
+        if isinstance(m, AIMessage):
+            try:
+                last_ai_had_tool_calls = bool(getattr(m, "tool_calls", None))
+            except Exception:
+                last_ai_had_tool_calls = False
+        else:
+            last_ai_had_tool_calls = False
+
+    messages = cleaned
 
     response = llm_with_tools.invoke(messages)
     return {"messages": [response]}

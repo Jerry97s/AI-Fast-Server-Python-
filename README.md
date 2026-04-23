@@ -79,9 +79,11 @@ uv run main.py
 uv run uvicorn api_server:app --host 127.0.0.1 --port 8787
 ```
 
+원격 노출·HTTPS·인증·방화벽은 [docs/SECURITY_AND_DEPLOYMENT.md](docs/SECURITY_AND_DEPLOYMENT.md)와 환경 변수(`AGENT_*`)를 참고하세요.
+
 | 엔드포인트 | 메서드 | 설명 |
 |-----------|--------|------|
-| `/health` | GET | 서비스 상태 확인 |
+| `/health` | GET | 서비스 상태, `version`, `model`(비밀 없음) |
 | `/v1/chat` | POST | 메시지 전송 및 응답 수신 |
 | `/v1/upload` | POST | 파일 업로드 (logs/ 저장) |
 
